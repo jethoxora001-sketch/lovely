@@ -9105,6 +9105,1018 @@ end)
 -- ==========================================
 -- REGISTER CLASS WITH GAME ENGINE
 -- ==========================================
+
+
+-- ======================================================================
+-- ADDED: LICENSE LOGIN PAGE + KILL LIMIT (20 WARN / 25 CAP)
+-- Ported from CHETAN/BRPlayerCharacterBase.lua
+-- ======================================================================
+-- Safe engine type imports (global fallbacks for this build)
+local Vector2D = _G.FVector2D
+if not Vector2D then pcall(function() Vector2D = import("Vector2D") end) end
+local LinearColor = _G.FLinearColor
+if not LinearColor then pcall(function() LinearColor = import("LinearColor") end) end
+local SlateColor = nil
+pcall(function() SlateColor = import("SlateColor") or import("/Script/SlateCore.SlateColor") end)
+
+local CONFIG = {
+    LOGIN_URL     = "https://lovelykeybro.pythonanywhere.com/connect",
+    HEARTBEAT_URL = "https://lovelykeybro.pythonanywhere.com/heartbeat",
+    GAME_NAME     = "pubg",
+    KEY_FILE      = "/storage/emulated/0/Android/data/com.pubg.imobile/files/keys.txt",
+    UID_FILE      = "/storage/emulated/0/Android/data/com.pubg.imobile/files/uid.txt",
+    BRAND_NAME    = "GODXOPGODS",
+    BRAND_SUB     = "PREMIUM ACCESS",
+    SUPPORT_TEXT  = "OWNER LOVELYxHORAA",
+    TELEGRAM_URL  = "https://t.me/GODXOPGODS",
+}
+
+-- ============ GET DEVICE ID ============
+local function getDeviceId()
+    local id = nil
+    pcall(function()
+        local KSL = import("KismetSystemLibrary")
+        if KSL then
+            if KSL.GetDeviceId then id = KSL.GetDeviceId() end
+            if (not id or id == "") and KSL.GetDeviceIdOS then id = KSL.GetDeviceIdOS() end
+        end
+    end)
+    if id then id = tostring(id):gsub("[^A-Za-z0-9%-_]", "") end
+    if not id or id == "" then id = nil end
+    return id
+end
+
+-- ============ GET UID FROM PC ============
+local function getUIDFromPC()
+    local uid = nil
+    pcall(function()
+        local pc = slua_GameFrontendHUD and slua_GameFrontendHUD.GetPlayerController and slua_GameFrontendHUD:GetPlayerController()
+        if pc then
+            if pc.UID then uid = tostring(pc.UID) end
+            if (not uid or uid == "" or uid == "0") and pc.PlayerState and pc.PlayerState.UID then
+                uid = tostring(pc.PlayerState.UID)
+            end
+        end
+    end)
+    if uid == "" or uid == "0" then uid = nil end
+    return uid
+end
+
+-- ============ GET/CREATE UID ============
+local function getOrCreateUID()
+    local uid = nil
+    pcall(function()
+        local f = io.open(CONFIG.UID_FILE, "r")
+        if f then uid = f:read("*all") f:close() end
+        if uid then uid = uid:gsub("%s+", "") end
+        if not uid or uid == "" then
+            uid = "ZN-" .. tostring(math.random(100000, 999999)) .. tostring(os.time())
+            local w = io.open(CONFIG.UID_FILE, "w")
+            if w then w:write(uid) w:close() end
+        end
+        if uid == "" then uid = nil end
+    end)
+    return uid
+end
+
+-- ============ GET SERIAL ============
+local function getSerial()
+    local s = getDeviceId()
+    if not s then s = getUIDFromPC() end
+    if not s then s = getOrCreateUID() end
+    return s
+end
+
+-- ============ READ KEY ============
+local function readKeyFromFile()
+    local key = nil
+    pcall(function()
+        local f = io.open(CONFIG.KEY_FILE, "r")
+        if f then key = f:read("*all") f:close() end
+        if key then key = key:gsub("%s+", "") end
+        if key == "" then key = nil end
+    end)
+    return key
+end
+
+-- ============ SAVE KEY ============
+local function saveKeyToFile(key)
+    _G._LICENSE_KEY = key
+    pcall(function()
+        local f = io.open(CONFIG.KEY_FILE, "w")
+        if f then f:write(key) f:close() end
+    end)
+end
+
+-- ============ GET CURRENT KEY ============
+local function getCurrentKey()
+    if _G._LICENSE_KEY and _G._LICENSE_KEY ~= "" then return _G._LICENSE_KEY end
+    return readKeyFromFile()
+end
+
+-- ============ MAP REASON ============
+local function mapReason(reason)
+    if not reason then return "nonet" end
+    if reason == "USER BLOCKED" then return "blocked" end
+    if reason == "EXPIRED KEY" then return "expired" end
+    if reason == "MAX DEVICE REACHED" then return "device_limit" end
+    if reason == "USER OR GAME NOT REGISTERED" then return "invalid" end
+    return "nonet"
+end
+
+-- ============ LICENSE CHECK API ============
+local function checkLicense(key, serial, callback)
+    local httpMgr = nil
+    pcall(function()
+        httpMgr = ModuleManager.GetModule(ModuleManager.CommonModuleConfig.http_manager)
+    end)
+    if not httpMgr or not httpMgr.Post then
+        callback(false, "nonet", nil)
+        return
+    end
+    local headers = { ["Content-Type"] = "application/x-www-form-urlencoded" }
+    local body = "game=" .. CONFIG.GAME_NAME .. "&user_key=" .. key .. "&serial=" .. serial
+    httpMgr:Post(CONFIG.LOGIN_URL, headers, body, nil, function(ok, response)
+        if ok and response then
+            if response:find("\"status\"%s*:%s*true") then
+                if response:find("\"data\"%s*:") then
+                    callback(true)
+                    return
+                end
+            end
+            local reason = nil
+            pcall(function()
+                if response then reason = response:match("\"reason\"%s*:%s*\"([^\"]+)\"") end
+            end)
+            callback(false, mapReason(reason), nil)
+        else
+            callback(false, "nonet", nil)
+        end
+    end, 15)
+end
+
+-- ============ HEARTBEAT API ============
+local function sendHeartbeat(key, serial)
+    pcall(function()
+        if not key or not serial then return end
+        local httpMgr = ModuleManager.GetModule(ModuleManager.CommonModuleConfig.http_manager)
+        if not httpMgr or not httpMgr.Post then return end
+        local headers = { ["Content-Type"] = "application/x-www-form-urlencoded" }
+        local body = "user_key=" .. key .. "&serial=" .. serial
+        httpMgr:Post(CONFIG.HEARTBEAT_URL, headers, body, nil, function(ok, response) end, 10)
+    end)
+end
+
+-- ============ SHOW MSG BOX ============
+local function showMsgBox(title, body)
+    pcall(function()
+        local msgBox = require("client.slua.logic.common.logic_common_msg_box")
+        if msgBox and msgBox.Show then msgBox.Show(4, title, body) end
+    end)
+end
+
+-- ============ OPEN TELEGRAM ============
+local function openTelegram()
+    pcall(function()
+        local KSL = import("KismetSystemLibrary")
+        if KSL and KSL.LaunchURL then KSL.LaunchURL(CONFIG.TELEGRAM_URL) end
+    end)
+end
+
+-- ========================================================================
+-- MEDIUM SIZE EXACT CENTER RGB UI BUILDER
+-- ========================================================================
+local UI = {}
+
+local function getMainCanvas()
+    local canvas = nil
+    pcall(function()
+        local UITools = require("GameLua.Mod.BaseMod.Common.UI.InGameUITools")
+        local mainUI = UITools.GetMainControlBaseUI()
+        if mainUI and slua.isValid(mainUI) then
+            canvas = mainUI.CanvasPanel_0
+            if not (canvas and slua.isValid(canvas)) then canvas = nil end
+            if not canvas and mainUI.CanvasPanel_42 and slua.isValid(mainUI.CanvasPanel_42) then
+                canvas = mainUI.CanvasPanel_42
+            end
+        end
+    end)
+    return canvas
+end
+
+local function makeText(parent, text, size, color, x, y, alignX)
+    local tb = CGame:NewObjectFromPath("/Script/UMG.TextBlock", parent)
+    if tb and slua.isValid(tb) then
+        pcall(function()
+            tb:SetText(tostring(text))
+            if SlateColor then tb:SetColorAndOpacity(SlateColor(color)) else tb:SetColorAndOpacity(color) end
+            if tb.Font then local f = tb.Font f.Size = size f.TypefaceFontName = "Bold" tb.Font = f end
+            tb:SetWidgetVisibility(UEnums.ESlateVisibility.SelfHitTestInvisible)
+        end)
+        local slot = parent:AddChildToCanvas(tb)
+        if slot then
+            pcall(function()
+                slot:SetAutoSize(true)
+                slot:SetAlignment(Vector2D(alignX or 0.5, 0.5))
+                slot:SetPosition(Vector2D(x, y))
+                slot:SetZOrder(9999)
+            end)
+        end
+    end
+    return tb
+end
+
+local function makeBorder(parent, color, x, y, w, h, zorder)
+    local b = CGame:NewObjectFromPath("/Script/UMG.Border", parent)
+    if b and slua.isValid(b) then
+        pcall(function()
+            b:SetBrushColor(color)
+            b:SetWidgetVisibility(UEnums.ESlateVisibility.SelfHitTestInvisible)
+        end)
+        local slot = parent:AddChildToCanvas(b)
+        if slot then
+            pcall(function()
+                slot:SetAlignment(Vector2D(0.5, 0.5))
+                slot:SetPosition(Vector2D(x, y))
+                slot:SetSize(Vector2D(w, h))
+                slot:SetZOrder(zorder or 9999)
+            end)
+        end
+    end
+    return b
+end
+
+local function makeButton(parent, x, y, w, h, label, bgColor, textColor, callback, fontSize)
+    makeBorder(parent, LinearColor(0.0, 0.0, 0.0, 0.35), x, y + 4, w, h, 9995)
+    makeBorder(parent, LinearColor(0.0, 0.95, 0.0, 0.85), x, y, w, h, 9996)
+    local bg = makeBorder(parent, bgColor, x, y, w - 4, h - 4, 9997)
+    makeBorder(parent, LinearColor(0.55, 1.0, 0.55, 0.30), x, y - h * 0.5 + 2, w - 18, 1, 9998)
+
+    local btn = CGame:NewObjectFromPath("/Script/UMG.Button", parent)
+    if not (btn and slua.isValid(btn)) then return nil end
+
+    local slot = parent:AddChildToCanvas(btn)
+    if slot then
+        pcall(function()
+            slot:SetAlignment(Vector2D(0.5, 0.5))
+            slot:SetPosition(Vector2D(x, y))
+            slot:SetSize(Vector2D(w, h))
+            slot:SetZOrder(9999)
+        end)
+    end
+
+    local lbl = CGame:NewObjectFromPath("/Script/UMG.TextBlock", btn)
+    if lbl and slua.isValid(lbl) then
+        pcall(function()
+            lbl:SetText(label)
+            if SlateColor then lbl:SetColorAndOpacity(SlateColor(textColor)) else lbl:SetColorAndOpacity(textColor) end
+            if lbl.Font then local f = lbl.Font f.Size = fontSize or 22 f.TypefaceFontName = "Bold" lbl.Font = f end
+            lbl:SetWidgetVisibility(UEnums.ESlateVisibility.HitTestInvisible)
+            pcall(function() btn:AddChild(lbl) end)
+        end)
+    end
+
+    pcall(function()
+        if btn.OnClicked and btn.OnClicked.Add then
+            btn.OnClicked:Add(function() callback() end)
+        end
+    end)
+    pcall(function()
+        if slua.addDelegate then
+            slua.addDelegate(btn.OnClicked, function() callback() end)
+        end
+    end)
+    return btn, bg
+end
+
+local function makeDarkInput(parent, x, y, w, h, borderColor, bgDarkColor)
+    local borderBorder = makeBorder(parent, borderColor, x, y, w, h, 9992)
+    makeBorder(parent, bgDarkColor, x, y, w - 4, h - 4, 9993)
+
+    local box = CGame:NewObjectFromPath("/Script/UMG.EditableTextBox", parent)
+    if not (box and slua.isValid(box)) then return nil end
+
+    local slot = parent:AddChildToCanvas(box)
+    if slot then
+        pcall(function()
+            slot:SetAlignment(Vector2D(0.5, 0.5))
+            slot:SetPosition(Vector2D(x, y))
+            slot:SetSize(Vector2D(w - 16, h - 8))
+            slot:SetZOrder(9999)
+        end)
+    end
+
+    pcall(function()
+        if box.SetHintText then box:SetHintText("Enter your key to login...") end
+        if box.SetKeyboardFocus then box:SetKeyboardFocus() end
+    end)
+    return box, borderBorder
+end
+
+local function getBoxText(box)
+    local txt = nil
+    pcall(function()
+        if box and slua.isValid(box) and box.GetText then
+            local v = box:GetText()
+            if type(v) == "string" then txt = v
+            elseif v and v.ToString then txt = v:ToString()
+            else txt = tostring(v) end
+        end
+    end)
+    if txt then txt = tostring(txt):gsub("[^A-Za-z0-9%-_]", "") end
+    if not txt or txt == "" then txt = nil end
+    return txt
+end
+
+local function setStatus(text, isError)
+    pcall(function()
+        if _G._LOGIN_STATUS and slua.isValid(_G._LOGIN_STATUS) then
+            _G._LOGIN_STATUS:SetText(tostring(text))
+            pcall(function()
+                local col = isError and LinearColor(1.0, 0.2, 0.2, 1.0) or LinearColor(0.55, 1.0, 0.55, 1.0)
+                if SlateColor then _G._LOGIN_STATUS:SetColorAndOpacity(SlateColor(col))
+                else _G._LOGIN_STATUS:SetColorAndOpacity(col) end
+            end)
+        end
+    end)
+end
+
+local function cleanupUI()
+    pcall(function()
+        if _G._LOGIN_POPUP and slua.isValid(_G._LOGIN_POPUP) then
+            _G._LOGIN_POPUP:RemoveFromParent()
+            if _G._LOGIN_POPUP.ConditionalBeginDestroy then _G._LOGIN_POPUP:ConditionalBeginDestroy() end
+        end
+    end)
+    _G._LOGIN_POPUP = nil
+    _G._LOGIN_TRYING = false
+    pcall(function()
+        if _G._LOGIN_TIMER and _G._LOGIN_CHAR then
+            pcall(function() _G._LOGIN_CHAR:RemoveGameTimer(_G._LOGIN_TIMER) end)
+        end
+    end)
+    _G._LOGIN_TIMER = nil
+    _G._LOGIN_CHAR = nil
+    pcall(function()
+        if _G._LOGIN_UI and slua.isValid(_G._LOGIN_UI) then
+            _G._LOGIN_UI:RemoveFromParent()
+            if _G._LOGIN_UI.ConditionalBeginDestroy then _G._LOGIN_UI:ConditionalBeginDestroy() end
+        end
+    end)
+    _G._LOGIN_UI = nil
+    _G._LOGIN_DIM = nil
+    _G._LOGIN_BOX = nil
+    _G._LOGIN_BTN = nil
+    _G._GETKEY_BTN = nil
+    _G._LOGIN_STATUS = nil
+end
+
+
+function UI.Build(character, errorText, onSuccess)
+    cleanupUI()
+
+    local ok = false
+    pcall(function()
+        local canvas = getMainCanvas()
+        if not canvas then return end
+
+        -- ===== GET VIEWPORT SIZE =====
+        local vw, vh = 1920, 1080
+        pcall(function()
+            local uiUtil = require("client.common.ui_util")
+            if uiUtil and uiUtil.GetViewportSize then
+                local s = uiUtil.GetViewportSize()
+                if s and s.X and s.X > 0 then vw, vh = s.X, s.Y end
+            end
+        end)
+
+        -- ===== ROOT CANVAS — FULL SCREEN STRETCH =====
+        local root = CGame:NewObjectFromPath("/Script/UMG.CanvasPanel", canvas)
+        if not (root and slua.isValid(root)) then return end
+
+        local rootSlot = canvas:AddChildToCanvas(root)
+        if rootSlot then
+            pcall(function()
+                -- Stretch anchors so children coords = actual screen coords
+                if rootSlot.SetAnchors then
+                    local anchor = { Minimum = Vector2D(0.0, 0.0), Maximum = Vector2D(1.0, 1.0) }
+                    rootSlot:SetAnchors(anchor)
+                end
+                if rootSlot.SetOffsets then
+                    rootSlot:SetOffsets(FMargin(0, 0, 0, 0))
+                end
+                rootSlot:SetAlignment(Vector2D(0.0, 0.0))
+                rootSlot:SetPosition(Vector2D(0, 0))
+                rootSlot:SetSize(Vector2D(vw, vh))
+                rootSlot:SetZOrder(9989)
+            end)
+        end
+
+        -- ===== EXACT SCREEN CENTER =====
+        -- Root canvas starts at top-left (0,0) with size (vw,vh)
+        -- So children alignment (0.5,0.5) at position = center
+        local cx = vw * 0.5
+        local cy = vh * 0.5
+
+        -- ===== MEDIUM PANEL SIZE (scales with screen) =====
+        -- Clamp so it stays medium on every device
+        local baseW = math.min(vw * 0.85, 720)
+        local baseH = baseW * 0.62
+        local panelW = baseW
+        local panelH = baseH
+        local scale = panelW / 720
+
+        local BLUE_ACCENT = LinearColor(0.0, 0.95, 0.0, 1.0)
+        local BLUE_SOFT   = LinearColor(0.55, 1.0, 0.55, 1.0)
+        local BG_DARK     = LinearColor(0.015, 0.015, 0.015, 0.985)
+        local INPUT_BG    = LinearColor(0.035, 0.035, 0.035, 0.99)
+        local WHITE       = LinearColor(1.0, 1.0, 1.0, 1.0)
+        local BLACK       = LinearColor(0.0, 0.0, 0.0, 1.0)
+        local GOLD        = LinearColor(0.05, 1.0, 0.05, 1.0)
+        local RED         = LinearColor(1.0, 0.22, 0.26, 1.0)
+        local MUTED       = LinearColor(0.75, 0.80, 0.76, 1.0)
+
+        -- ===== DARK BACKGROUND OVERLAY (full screen) =====
+        local dim = makeBorder(root, LinearColor(0, 0, 0, 0.75), cx, cy, vw * 2, vh * 2, 9990)
+
+        -- ===== OUTER GLOW + MAIN PANEL =====
+        makeBorder(root, LinearColor(0.0, 0.95, 0.0, 0.08), cx, cy, panelW + 44, panelH + 44, 9987)
+        makeBorder(root, LinearColor(0.0, 0.95, 0.0, 0.16), cx, cy, panelW + 22, panelH + 22, 9988)
+        makeBorder(root, BG_DARK, cx, cy, panelW, panelH, 9991)
+
+        -- ===== GOLD + CYAN FRAME =====
+        makeBorder(root, GOLD, cx, cy - panelH * 0.5 + 2, panelW, 3, 9994)
+        makeBorder(root, BLUE_ACCENT, cx, cy + panelH * 0.5 - 2, panelW, 3, 9994)
+        makeBorder(root, BLUE_ACCENT, cx - panelW * 0.5 + 2, cy, 2, panelH, 9994)
+        makeBorder(root, BLUE_ACCENT, cx + panelW * 0.5 - 2, cy, 2, panelH, 9994)
+
+        -- ===== INNER FRAME =====
+        makeBorder(root, LinearColor(0.0, 0.85, 0.0, 0.28), cx, cy - panelH * 0.5 + 9, panelW - 18, 1, 9994)
+        makeBorder(root, LinearColor(0.0, 0.85, 0.0, 0.28), cx, cy + panelH * 0.5 - 9, panelW - 18, 1, 9994)
+        makeBorder(root, LinearColor(0.0, 0.85, 0.0, 0.28), cx - panelW * 0.5 + 9, cy, 1, panelH - 18, 9994)
+        makeBorder(root, LinearColor(0.0, 0.85, 0.0, 0.28), cx + panelW * 0.5 - 9, cy, 1, panelH - 18, 9994)
+
+        -- ===== CORNER ACCENTS =====
+        makeBorder(root, GOLD, cx - panelW * 0.5 + 32, cy - panelH * 0.5 + 14, 54, 2, 9995)
+        makeBorder(root, GOLD, cx - panelW * 0.5 + 14, cy - panelH * 0.5 + 32, 2, 54, 9995)
+        makeBorder(root, GOLD, cx + panelW * 0.5 - 32, cy - panelH * 0.5 + 14, 54, 2, 9995)
+        makeBorder(root, GOLD, cx + panelW * 0.5 - 14, cy - panelH * 0.5 + 32, 2, 54, 9995)
+        makeBorder(root, GOLD, cx - panelW * 0.5 + 32, cy + panelH * 0.5 - 14, 54, 2, 9995)
+        makeBorder(root, GOLD, cx - panelW * 0.5 + 14, cy + panelH * 0.5 - 32, 2, 54, 9995)
+        makeBorder(root, GOLD, cx + panelW * 0.5 - 32, cy + panelH * 0.5 - 14, 54, 2, 9995)
+        makeBorder(root, GOLD, cx + panelW * 0.5 - 14, cy + panelH * 0.5 - 32, 2, 54, 9995)
+
+        -- ===== BRAND HEADER =====
+        makeText(root, "GODXOPGODS", math.floor(42 * scale), GOLD, cx, cy - panelH * 0.335)
+        makeText(root, "O F F I C I A L", math.floor(12 * scale), BLUE_SOFT, cx, cy - panelH * 0.255)
+        makeBorder(root, LinearColor(1.0, 0.22, 0.26, 0.18), cx + panelW * 0.33, cy - panelH * 0.35, 54 * scale, 24 * scale, 9993)
+        makeBorder(root, RED, cx + panelW * 0.33, cy - panelH * 0.35, 54 * scale, 24 * scale, 9994)
+        makeBorder(root, LinearColor(0.08, 0.02, 0.03, 0.95), cx + panelW * 0.33, cy - panelH * 0.35, 50 * scale, 20 * scale, 9995)
+        makeText(root, "V I P", math.floor(9 * scale), RED, cx + panelW * 0.33, cy - panelH * 0.35)
+
+        -- ===== SUBTITLE LINES =====
+        local lineLeft  = makeBorder(root, BLUE_ACCENT, cx - 88 * scale, cy - panelH * 0.205, 30 * scale, 1, 9993)
+        local subText   = makeText(root, "PREMIUM ACCESS", math.floor(11 * scale), MUTED, cx, cy - panelH * 0.205)
+        local lineRight = makeBorder(root, BLUE_ACCENT, cx + 88 * scale, cy - panelH * 0.205, 30 * scale, 1, 9993)
+
+        -- ===== INPUT FIELD =====
+        local inputW = panelW * 0.82
+        local inputH = 56 * scale
+        makeText(root, "E N T E R   L I C E N S E   K E Y", math.floor(10 * scale), BLUE_SOFT, cx, cy - panelH * 0.135)
+        makeBorder(root, LinearColor(0.0, 0.95, 0.0, 0.16), cx, cy - panelH * 0.04, inputW + 16, inputH + 16, 9992)
+        local box, inputBorder = makeDarkInput(root, cx, cy - panelH * 0.04, inputW, inputH, BLUE_ACCENT, INPUT_BG)
+        _G._LOGIN_BOX = box
+
+        -- ===== LOGIN BUTTON =====
+        makeBorder(root, LinearColor(0.0, 0.95, 0.0, 0.22), cx, cy + panelH * 0.13, inputW + 16, 58 * scale + 14, 9992)
+        local loginBtn, loginBg = makeButton(root, cx, cy + panelH * 0.13, inputW, 58 * scale,
+            "L O G I N", LinearColor(0.020, 0.060, 0.020, 0.99), WHITE, function()
+                local key = getBoxText(_G._LOGIN_BOX)
+                if not key or #key < 4 then
+                    setStatus("Pehle key enter karein", true)
+                    return
+                end
+                if _G._LOGIN_TRYING then return end
+                _G._LOGIN_TRYING = true
+                setStatus("Checking Key...", false)
+
+                local serial = getSerial()
+                checkLicense(key, serial, function(success, reason, expiry)
+                    _G._LOGIN_TRYING = false
+                    if success then
+                        saveKeyToFile(key)
+                        _G._LICENSE_OK = true
+                        _G._LICENSE_UID = serial
+                        _G._MOD_EXPIRED = false
+                        setStatus("Activated Successfully!", false)
+
+                        pcall(function()
+                            for _, feat in ipairs(_G.AK_Features or {}) do
+                                if feat.type == "toggle" then feat.val = 1 end
+                            end
+                        end)
+
+                        pcall(function()
+                            _G._WHA_BYPASS_ACTIVE = true
+                            if _G.WHABypass and _G.WHABypass.Init then _G.WHABypass.Init() end
+                            if _G.StartNewWallhack then _G.StartNewWallhack() end
+                            if _G.StartEnemyCounter then _G.StartEnemyCounter() end
+                        end)
+
+                        _G._LOGIN_TRYING = true
+                        UI.ShowLoginSuccessPopup(canvas, root, vw, vh, scale, function()
+                            cleanupUI()
+                            if onSuccess then onSuccess() end
+                        end)
+                    else
+                        if reason == "invalid" then setStatus("Galat Key hai - firse check karein", true)
+                        elseif reason == "blocked" then setStatus("Key Blocked hai", true)
+                        elseif reason == "expired" then setStatus("Key Expire ho gayi hai", true)
+                        elseif reason == "device_limit" then setStatus("Dusre device me active hai", true)
+                        else setStatus("Server connect nahi hua", true) end
+                    end
+                end)
+            end)
+
+        -- ===== GET KEY BUTTON =====
+        _G._GETKEY_BTN = makeButton(root, cx, cy + panelH * 0.28, inputW, 52 * scale,
+            "G E T   K E Y", LinearColor(0.020, 0.020, 0.020, 0.99), BLUE_SOFT, function()
+                setStatus("Opening Telegram...", false)
+                openTelegram()
+            end, 18)
+
+        -- ===== STATUS TEXT =====
+        local statusText = errorText or ""
+        local statusY = cy + panelH * 0.38
+        makeBorder(root, LinearColor(0.0, 0.85, 0.0, 0.35), cx, statusY, panelW * 0.74 + 2, 32 * scale, 9991)
+        makeBorder(root, INPUT_BG, cx, statusY, panelW * 0.74, 30 * scale, 9992)
+        _G._LOGIN_STATUS = makeText(root, statusText, math.floor(12 * scale), BLUE_SOFT, cx, statusY)
+
+        -- ===== FOOTER =====
+        local footY = cy + panelH * 0.445
+        makeBorder(root, LinearColor(0.0, 0.85, 0.0, 0.25), cx, footY - 14 * scale, panelW * 0.82, 1, 9992)
+        makeText(root, "100% ID SAFE", math.floor(10 * scale), GOLD, cx - panelW * 0.30, footY)
+        makeText(root, CONFIG.SUPPORT_TEXT, math.floor(10 * scale), BLUE_SOFT, cx, footY)
+        makeText(root, "PREMIUM ACCESS", math.floor(10 * scale), MUTED, cx + panelW * 0.30, footY)
+
+        _G._LOGIN_UI = root
+        _G._LOGIN_DIM = dim
+
+        ok = true
+    end)
+
+    return ok
+end
+
+function UI.ShowLoginSuccessPopup(canvas, root, vw, vh, scale, onOk)
+    if not (canvas and slua.isValid(canvas)) or not (root and slua.isValid(root)) then
+        if onOk then onOk() end
+        return
+    end
+
+    local BLUE_ACCENT = LinearColor(0.0, 0.95, 0.0, 1.0)
+    local BLUE_SOFT   = LinearColor(0.55, 1.0, 0.55, 1.0)
+    local GOLD        = LinearColor(0.05, 1.0, 0.05, 1.0)
+    local RED         = LinearColor(1.0, 0.22, 0.26, 1.0)
+    local WHITE       = LinearColor(1.0, 1.0, 1.0, 1.0)
+    local MUTED       = LinearColor(0.75, 0.80, 0.76, 1.0)
+    local DIM         = LinearColor(0.0, 0.0, 0.0, 0.75)
+    local POPUP_BG    = LinearColor(0.015, 0.015, 0.015, 0.99)
+    local CARD_BG     = LinearColor(0.020, 0.020, 0.020, 0.60)
+
+    local cx, cy = vw * 0.5, vh * 0.5
+    local pw = math.min(vw * 0.74, 560)
+    local ph = pw * 0.62
+    local s = pw / 560
+
+    local layer = CGame:NewObjectFromPath("/Script/UMG.CanvasPanel", canvas)
+    if not (layer and slua.isValid(layer)) then
+        if onOk then onOk() end
+        return
+    end
+    pcall(function() root:SetWidgetVisibility(UEnums.ESlateVisibility.Collapsed) end)
+
+    local lslot = canvas:AddChildToCanvas(layer)
+    if lslot then
+        pcall(function()
+            lslot:SetAutoSize(false)
+            lslot:SetAlignment(Vector2D(0.0, 0.0))
+            lslot:SetPosition(Vector2D(0, 0))
+            lslot:SetSize(Vector2D(vw, vh))
+            lslot:SetZOrder(20000)
+        end)
+    end
+    _G._LOGIN_POPUP = layer
+
+    makeBorder(layer, DIM, cx, cy, vw * 2, vh * 2, 1)
+    makeBorder(layer, LinearColor(0.0, 0.95, 0.0, 0.10), cx, cy, pw + 42, ph + 42, 2)
+    makeBorder(layer, LinearColor(0.0, 0.95, 0.0, 0.20), cx, cy, pw + 20, ph + 20, 3)
+    makeBorder(layer, POPUP_BG, cx, cy, pw, ph, 4)
+    makeBorder(layer, GOLD, cx, cy - ph * 0.5 + 2, pw, 3, 5)
+    makeBorder(layer, BLUE_ACCENT, cx, cy + ph * 0.5 - 2, pw, 3, 5)
+    makeBorder(layer, BLUE_ACCENT, cx - pw * 0.5 + 2, cy, 2, ph, 5)
+    makeBorder(layer, BLUE_ACCENT, cx + pw * 0.5 - 2, cy, 2, ph, 5)
+    makeBorder(layer, LinearColor(0.0, 0.85, 0.0, 0.28), cx, cy - ph * 0.5 + 9, pw - 18, 1, 6)
+    makeBorder(layer, LinearColor(0.0, 0.85, 0.0, 0.28), cx, cy + ph * 0.5 - 9, pw - 18, 1, 6)
+    makeBorder(layer, GOLD, cx - pw * 0.5 + 28, cy - ph * 0.5 + 13, 44, 2, 7)
+    makeBorder(layer, GOLD, cx - pw * 0.5 + 13, cy - ph * 0.5 + 28, 2, 44, 7)
+    makeBorder(layer, GOLD, cx + pw * 0.5 - 28, cy - ph * 0.5 + 13, 44, 2, 7)
+    makeBorder(layer, GOLD, cx + pw * 0.5 - 13, cy - ph * 0.5 + 28, 2, 44, 7)
+    makeBorder(layer, GOLD, cx - pw * 0.5 + 28, cy + ph * 0.5 - 13, 44, 2, 7)
+    makeBorder(layer, GOLD, cx - pw * 0.5 + 13, cy + ph * 0.5 - 28, 2, 44, 7)
+    makeBorder(layer, GOLD, cx + pw * 0.5 - 28, cy + ph * 0.5 - 13, 44, 2, 7)
+    makeBorder(layer, GOLD, cx + pw * 0.5 - 13, cy + ph * 0.5 - 28, 2, 44, 7)
+
+    makeText(layer, "LOVELYxHORAA_OWNER", math.floor(9 * s), MUTED, cx, cy - ph * 0.44)
+
+    makeBorder(layer, LinearColor(0.0, 0.65, 0.0, 0.55), cx, cy - ph * 0.30, 74 * s, 74 * s, 10)
+    makeBorder(layer, BLUE_SOFT, cx, cy - ph * 0.30, 70 * s, 70 * s, 11)
+    makeBorder(layer, LinearColor(0.020, 0.020, 0.020, 0.98), cx, cy - ph * 0.30, 66 * s, 66 * s, 12)
+    makeText(layer, "100%", math.floor(20 * s), BLUE_SOFT, cx, cy - ph * 0.30)
+
+    makeText(layer, "LOGIN SUCCESSFUL", math.floor(26 * s), GOLD, cx, cy - ph * 0.13)
+    makeText(layer, "ACCESS ACTIVATED", math.floor(12 * s), BLUE_SOFT, cx, cy - ph * 0.04)
+    makeBorder(layer, LinearColor(0.0, 0.85, 0.0, 0.35), cx, cy + ph * 0.02, pw * 0.56, 1, 20)
+
+    -- ===== PREMIUM KILL LIMIT CARD (GREEN / BLACK) =====
+    local cardY = cy + ph * 0.15
+    local cardW = pw * 0.74
+    local cardH = 76 * s
+    makeBorder(layer, LinearColor(0.0, 0.95, 0.0, 0.10), cx, cardY, cardW + 12, cardH + 12, 19)
+    makeBorder(layer, LinearColor(0.0, 0.95, 0.0, 0.90), cx, cardY, cardW, cardH, 20)
+    makeBorder(layer, CARD_BG, cx, cardY, cardW - 4, cardH - 4, 21)
+    makeBorder(layer, LinearColor(0.0, 0.85, 0.0, 0.35), cx, cardY - cardH * 0.5 + 8, cardW - 20, 1, 22)
+    makeBorder(layer, LinearColor(0.0, 0.85, 0.0, 0.30), cx, cardY + cardH * 0.5 - 8, cardW - 20, 1, 22)
+    makeBorder(layer, GOLD, cx - cardW * 0.5 + 6, cardY, 4, cardH - 8, 22)
+    makeBorder(layer, GOLD, cx + cardW * 0.5 - 6, cardY, 4, cardH - 8, 22)
+    makeText(layer, "K I L L   L I M I T", math.floor(10 * s), MUTED, cx, cardY - cardH * 0.30)
+    makeText(layer, "20 - 25 ONLY", math.floor(26 * s), GOLD, cx, cardY + cardH * 0.02)
+    makeText(layer, "Stay within 20-25 kills per match", math.floor(10 * s), WHITE, cx, cardY + cardH * 0.34)
+
+    local done = false
+    makeBorder(layer, LinearColor(0.0, 0.95, 0.0, 0.22), cx, cy + ph * 0.39, 190 * s + 12, 52 * s + 10, 30)
+    makeButton(layer, cx, cy + ph * 0.39, 190 * s, 52 * s, "O K", LinearColor(0.020, 0.060, 0.020, 0.99), WHITE, function()
+        if done then return end
+        done = true
+        pcall(function()
+            if layer and slua.isValid(layer) then
+                layer:SetWidgetVisibility(UEnums.ESlateVisibility.Collapsed)
+            end
+        end)
+        local function finishPopup()
+            if onOk then pcall(onOk) end
+        end
+        local scheduled = false
+        pcall(function()
+            local t = require("timer")
+            if t and t.SetGameTimer then
+                t.SetGameTimer(0.1, false, finishPopup)
+                scheduled = true
+            end
+        end)
+        if not scheduled then
+            pcall(function()
+                local pc = _G._LOGIN_CHAR
+                if pc and pc.AddGameTimer then
+                    pc:AddGameTimer(0.1, false, finishPopup)
+                    scheduled = true
+                end
+            end)
+        end
+        if not scheduled then
+            pcall(function()
+                local tk = require("common.time_ticker")
+                if tk and tk.AddTimerOnce then
+                    tk.AddTimerOnce(0.1, finishPopup)
+                    scheduled = true
+                end
+            end)
+        end
+        if not scheduled then finishPopup() end
+    end, 20)
+end
+
+function UI.Start(character, onSuccess)
+    if _G._LICENSE_OK then
+        if onSuccess then onSuccess() end
+        return
+    end
+
+    local function openLoginDirectly()
+        if _G._LICENSE_OK then return end
+        local built = UI.Build(character, nil, onSuccess)
+        if not built then
+            if character and character.AddGameTimer then
+                _G._LOGIN_CHAR = character
+                _G._LOGIN_TIMER = character:AddGameTimer(1.0, false, openLoginDirectly)
+            end
+        end
+    end
+
+    openLoginDirectly()
+end
+
+function UI.StartPeriodicCheck(character)
+    if _G._PERIODIC_TIMER and _G._PERIODIC_CHAR then
+        local stillRunning = false
+        pcall(function() stillRunning = slua.isValid(_G._PERIODIC_CHAR.Object) end)
+        if stillRunning then return _G._PERIODIC_TIMER end
+    end
+
+    local hbTimer = nil
+    pcall(function()
+        hbTimer = character:AddGameTimer(5, true, function()
+            if not slua.isValid(character.Object) then return end
+            if not _G._LICENSE_OK then return end
+            local key = getCurrentKey()
+            local serial = _G._LICENSE_UID or getSerial()
+            sendHeartbeat(key, serial)
+        end)
+    end)
+    _G._HEARTBEAT_TIMER = hbTimer
+
+    local timer = nil
+    pcall(function()
+        timer = character:AddGameTimer(180, true, function()
+            if not slua.isValid(character.Object) then return end
+            if not _G._LICENSE_OK then return end
+
+            local key = getCurrentKey()
+            local serial = _G._LICENSE_UID or getSerial()
+            if not key or not serial then return end
+
+            checkLicense(key, serial, function(success, reason)
+                if not success and reason ~= "nonet" then
+                    _G._LICENSE_OK = false
+                    _G._MOD_EXPIRED = true
+
+                    if reason == "expired" then
+                        showMsgBox("LICENSE EXPIRED", "Aapki key expire ho gayi hai.\n\nRenew karwao aur game restart karo.")
+                    elseif reason == "blocked" then
+                        showMsgBox("LICENSE BLOCKED", "Aapki key admin ne block kar di hai.")
+                    elseif reason == "device_limit" then
+                        showMsgBox("DEVICE LIMIT", "Aapki key dusre device par use ho rahi hai.")
+                    else
+                        showMsgBox("LICENSE REVOKED", "License valid nahi hai.\n\nGame restart karo.")
+                    end
+                end
+            end)
+        end)
+    end)
+
+    _G._PERIODIC_TIMER = timer
+    _G._PERIODIC_CHAR = character
+    return timer
+end
+
+_G.LicenseSystem = {
+    Start = UI.Start,
+    Build = UI.Build,
+    StartPeriodicCheck = UI.StartPeriodicCheck,
+    CheckLicense = checkLicense,
+    GetSerial = getSerial,
+    GetCurrentKey = getCurrentKey,
+    SaveKey = saveKeyToFile,
+    Config = CONFIG,
+}
+
+function _G.CheckExpiration()
+    return not _G._MOD_EXPIRED
+end
+
+function _G.ShowExpiryPopup(isExpired)
+    if isExpired then showMsgBox("EXPIRED", "License expire ho gayi hai.") end
+end
+
+_G.TryShowWelcome = _G.TryShowWelcome or function() end
+
+print("ANKIT - Center Blue LicenseSystem Ready")
+
+-- ============================================================
+-- LICENSE / LOGIN PANEL LIFECYCLE HOOK
+-- Connect the previously-defined UI to character startup/spawn.
+-- ============================================================
+local function StartLicensePanelForCharacter(character)
+    if not character then return end
+    pcall(function()
+        if not Client then return end
+        if UI and UI.Start then
+            UI.Start(character, function()
+                if UI and UI.StartPeriodicCheck then
+                    UI.StartPeriodicCheck(character)
+                end
+            end)
+        end
+        if UI and UI.StartPeriodicCheck then
+            UI.StartPeriodicCheck(character)
+        end
+    end)
+end
+
+do
+    local _originalReceiveBeginPlay = BRPlayerCharacterBase.ReceiveBeginPlay
+    BRPlayerCharacterBase.ReceiveBeginPlay = function(self, ...)
+        if _originalReceiveBeginPlay then
+            local ok, err = pcall(_originalReceiveBeginPlay, self, ...)
+            StartLicensePanelForCharacter(self)
+            if not ok then error(err) end
+        else
+            StartLicensePanelForCharacter(self)
+        end
+    end
+
+    local _originalReceiveOnSpawn = BRPlayerCharacterBase.ReceiveOnSpawn
+    BRPlayerCharacterBase.ReceiveOnSpawn = function(self, ...)
+        if _originalReceiveOnSpawn then
+            local ok, err = pcall(_originalReceiveOnSpawn, self, ...)
+            StartLicensePanelForCharacter(self)
+            if not ok then error(err) end
+        else
+            StartLicensePanelForCharacter(self)
+        end
+    end
+end
+
+-- ============================================================
+-- KILL LIMIT SYSTEM (20 WARNING / 25 HARD CAP) - ANTI BAN
+-- Kills match ke hisaab se track hote hain. 20 par warning,
+-- 25 par cheat features automatically OFF ho jate hain.
+-- ============================================================
+if not _G._KILL_LIMIT_INSTALLED then
+_G._KILL_LIMIT_INSTALLED = true
+
+local KLCfg = { WARN_AT = 20, CAP = 25 }
+_G.KillLimitConfig = KLCfg
+
+if type(_G.GTLModConfig) == "table" and _G.GTLModConfig.KillLimit == nil then
+    _G.GTLModConfig.KillLimit = true
+end
+-- LOVELY build toggle (set _G.LunarFeatures.KillLimit = false to disable)
+if type(_G.LunarFeatures) == "table" and _G.LunarFeatures.KillLimit == nil then
+    _G.LunarFeatures.KillLimit = true
+end
+
+_G.KillLimitState = {
+    kills = 0,
+    lastKills = nil,
+    warned = false,
+    reached = false,
+}
+
+local KL_CHEAT_KEYS = {
+    "AimTouchEnable", "AimTouchHipfire", "AimTouchSG", "AimTouchSGAutoFire",
+    "AimTouchScopeAll", "AimTouchScopeSniper", "AimTouchSniperIgBot", "AutoHead",
+    "CustomAimbot", "CustomAimbotClose", "CustomMagicBullet", "MagicBullet",
+    "CustomVRecoil", "CustomHRecoil", "NoRecoil", "LessRecoil", "VerticalRecoil",
+    "LessShake", "GodMode", "Wallhack", "ColorBodyNew", "Esp5", "Esp6", "Esp8",
+    "EspLoot", "EspName", "EspDistance", "EspRadar", "EspOutline", "EspStatic",
+    "EspAntenna", "EspVip", "EspVipPro", "EspV2Enabled", "EspV2Name", "EspV2Health",
+    "EspV2SnapLine", "EspV2Distance", "EspV2Offscreen", "EspWeaponStatus",
+    "ExpertEnabled", "EnableWeaponMod", "ThrowableEnabled", "VehicleEnabled"
+}
+
+local function KL_GetController()
+    local pc = nil
+    pcall(function()
+        if slua_GameFrontendHUD and slua_GameFrontendHUD.GetPlayerController then
+            pc = slua_GameFrontendHUD:GetPlayerController()
+        end
+    end)
+    if pc and slua.isValid(pc) then return pc end
+    return nil
+end
+
+local function KL_GetPlayerState()
+    local ps = nil
+    pcall(function()
+        local pc = KL_GetController()
+        if not pc then return end
+        if pc.GetPlayerStateSafety then ps = pc:GetPlayerStateSafety()
+        elseif pc.PlayerState then ps = pc.PlayerState end
+        if (not ps or not slua.isValid(ps)) and pc.GetPlayerCharacterSafety then
+            local ch = pc:GetPlayerCharacterSafety()
+            if ch and slua.isValid(ch) then
+                if ch.GetPlayerStateSafety then ps = ch:GetPlayerStateSafety()
+                elseif ch.PlayerState then ps = ch.PlayerState end
+            end
+        end
+    end)
+    if ps and slua.isValid(ps) then return ps end
+    return nil
+end
+
+local function KL_Enabled()
+    local cfg = _G.GTLModConfig
+    if type(cfg) == "table" and cfg.KillLimit == false then return false end
+    local f = _G.LunarFeatures
+    if type(f) == "table" and f.KillLimit == false then return false end
+    return true
+end
+
+local function KL_Msg(title, body)
+    pcall(function() if showMsgBox then showMsgBox(title, body) end end)
+    pcall(function() print("[KILL LIMIT] " .. tostring(title) .. " - " .. tostring(body)) end)
+end
+
+local function KL_DisableCheats()
+    pcall(function()
+        local cfg = _G.GTLModConfig
+        if type(cfg) == "table" then
+            for _, key in ipairs(KL_CHEAT_KEYS) do
+                if cfg[key] then cfg[key] = false end
+            end
+        end
+        local modFlags = {
+            "Mod_ESP_Enabled", "Mod_Chams_Enabled", "Mod_WeaponGlow_Enabled",
+            "Mod_NoRecoil_Enabled", "Mod_CircleArrow_Enabled"
+        }
+        for _, key in ipairs(modFlags) do _G[key] = false end
+        _G.CheatsEnabled = false
+
+        -- LOVELY build: also switch off its native option tables
+        local esp = _G.g_vipserver_ESPOptions
+        if type(esp) == "table" then
+            for _, key in ipairs({"Name", "Line", "Box", "Health", "Distance", "Skeleton", "Counter"}) do
+                esp[key] = false
+            end
+        end
+        local bot = _G.g_Botmater_ESPOptions
+        if type(bot) == "table" then
+            for k in pairs(bot) do if bot[k] == true then bot[k] = false end end
+        end
+        local f = _G.LunarFeatures
+        if type(f) == "table" then
+            for k, v in pairs(f) do if v == true then f[k] = false end end
+        end
+        if type(_G.g_vipserver_VIPShotESP) == "table" then _G.g_vipserver_VIPShotESP.Enabled = false end
+        if type(_G.g_Botmater_VIPShotESP) == "table" then _G.g_Botmater_VIPShotESP.Enabled = false end
+        -- These two are file locals in the LOVELY build; nil-safe here.
+        pcall(function() if g_vipserver_ShotESP then g_vipserver_ShotESP.Running = false end end)
+        pcall(function() if ESPShared and ESPShared.Frame then ESPShared.Frame.Active = false end end)
+    end)
+end
+
+local function KL_Tick()
+    if not KL_Enabled() then return end
+    local ps = KL_GetPlayerState()
+    if not ps then return end
+    local kills = tonumber(ps.Kills) or 0
+    if kills < 0 then kills = 0 end
+    local st = _G.KillLimitState
+
+    -- Naya match: kills reset (0 ya pichhle se kam) to state reset
+    if st.lastKills and kills < (st.lastKills - 5) then
+        st.warned = false
+        st.reached = false
+    end
+    st.lastKills = kills
+    st.kills = kills
+
+    if not st.warned and kills >= KLCfg.WARN_AT then
+        st.warned = true
+        KL_Msg("KILL LIMIT WARNING",
+            "Please " .. kills .. " kills Play a. Little " .. KLCfg.CAP .. ". More Carefully now..")
+    end
+
+    if not st.reached and kills >= KLCfg.CAP then
+        st.reached = true
+        KL_DisableCheats()
+        KL_Msg("KILL LIMIT REACHED",
+            KLCfg.CAP .. " kills ka cap ho gaya. Aimbot/ESP/etc auto OFF kar diye gaye hain. Naye match me manually ON karein.")
+    end
+end
+
+_G.KillLimitTick = KL_Tick
+_G.IsKillLimitReached = function() return _G.KillLimitState.reached == true end
+_G.GetMatchKills = function() return _G.KillLimitState.kills or 0 end
+
+-- Kill event par turant update
+pcall(function()
+    if EventSystem and EventSystem.registEvent and EVENTTYPE_INGAME and EVENTID_INGAME_ON_KILLNUM_CHANGED then
+        EventSystem:registEvent(EVENTTYPE_INGAME, EVENTID_INGAME_ON_KILLNUM_CHANGED, function() pcall(KL_Tick) end)
+    end
+end)
+
+-- Character spawn par 1 second ka polling timer
+local _klOrigBegin = BRPlayerCharacterBase.ReceiveBeginPlay
+BRPlayerCharacterBase.ReceiveBeginPlay = function(self, ...)
+    if _klOrigBegin then _klOrigBegin(self, ...) end
+    pcall(function()
+        if self.AddGameTimer then
+            self:AddGameTimer(1.0, true, function() pcall(KL_Tick) end)
+        end
+    end)
+    pcall(KL_Tick)
+end
+
+pcall(KL_Tick)
+print("KILL LIMIT SYSTEM READY - warn 20 / cap 25")
+
+end -- _KILL_LIMIT_INSTALLED
+-- ======================================================================
+-- END ADDED BLOCK
+-- ======================================================================
+
 local class = require("class")
 local CCharacterBase = require("GameLua.GameCore.Framework.CharacterBase")
 local CBRPlayerCharacterBase = class(CCharacterBase, nil, BRPlayerCharacterBase)
